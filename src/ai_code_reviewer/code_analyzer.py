@@ -64,7 +64,7 @@ class CodeAnalyzer:
         # 获取完整文件内容
         file_path = self.project_root / filename
         if file_path.exists():
-            full_content = file_path.read_text()
+            full_content = file_path.read_text(encoding='utf-8')
             tree = ast.parse(full_content)
             self._ast_cache[filename] = tree
             self._file_cache[filename] = full_content
