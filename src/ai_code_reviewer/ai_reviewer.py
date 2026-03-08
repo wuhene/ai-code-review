@@ -3,7 +3,7 @@
 import json
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 
 try:
     import httpx
@@ -19,6 +19,7 @@ class ReviewRequest:
     filename: str
     element_name: Optional[str] = None
     element_type: Optional[str] = None
+    call_chain_info: Optional[str] = None  # 调用链信息
 
 
 @dataclass
@@ -104,7 +105,7 @@ class AIReviewer:
                 "messages": [{"role": "user", "content": prompt}]
             }
         elif self.provider in ["openai", "qwen", "doubao"]:
-            # OpenAI 格式（也适用于千问、豆包等兼容 OpenAI 格式的 API）
+            # OpenAI 格式 (也适用于千问、豆包等兼容 OpenAI 格式的 API)
             if self.base_url is None:
                 # 默认 URL
                 urls = {
@@ -137,7 +138,7 @@ class AIReviewer:
 
         # 发送请求
         try:
-            print(f"  发送给ai的请求url：{url},headers:{headers},body:{body}")
+            print(f"  发送给 AI 的请求 url: {url},header:{headers},body:{body}")
             response = httpx.post(url, headers=headers, json=body, timeout=120)
             response.raise_for_status()
             result = response.json()
@@ -180,43 +181,57 @@ class AIReviewer:
 
     def _build_prompt(self, request: ReviewRequest) -> str:
         """构建审查提示。"""
-        prompt = f"""我需要你审查一个代码变更。请分析以下内容：
-1. 代码质量和最佳实践
-2. 潜在的 bug 或问题
-3. 安全问题
-4. 性能影响
-5. 可维护性和可读性
+        prompt_parts = [
+            "我需要你审查一个代码变更。请分析以下内容：",
+            "1. 代码质量和最佳实践",
+            "2. 潜在的 bug 或问题",
+            "3. 安全问题",
+            "4. 性能影响",
+            "5. 可维护性和可读性",
+            ""
+        ]
 
-## 更改的文件：{request.filename}
+        # 如果有调用链信息，添加特别说明
+        if request.call_chain_info:
+            prompt_parts.append("## ⚠️ 调用链信息")
+            prompt_parts.append("```")
+            prompt_parts.append(request.call_chain_info)
+            prompt_parts.append("```")
+            prompt_parts.append("特别注意检查这些调用链是否会被你的更改影响！")
+            prompt_parts.append("")
 
-## Diff:
-```diff
-{request.diff_content}
-```
+        prompt_parts.extend([
+            f"## 更改的文件：{request.filename}",
+            "",
+            "## Diff:",
+            "```diff",
+            f"{request.diff_content}",
+            "```",
+            "",
+            "## 相关代码上下文:",
+            "```python",
+            f"{request.context_code}",
+            "```",
+            "",
+            "请提供：",
+            "1. 更改的简要摘要",
+            "2. 发现的问题 (严重程度：critical/high/medium/low)",
+            "3. 具体的改进建议",
+            "4. 总体评估 (approve/needs changes/major revision needed)",
+            "5. 涉及到的调用链路，如出现问题会导致哪个调用链异常",
+            "",
+            "请将你的响应格式化为 JSON:",
+            "{",
+            '    "summary": "...",',
+            '    "issues": [',
+            '        {"severity": "high", "description": "...", "line": 10}',
+            "    ],",
+            '    "suggestions": ["..."],',
+            '    "assessment": "approve"',
+            "}"
+        ])
 
-## 相关代码上下文：
-```python
-{request.context_code}
-```
-
-请提供：
-1. 更改的简要摘要
-2. 发现的问题（严重程度：critical/high/medium/low）
-3. 具体的改进建议
-4. 总体评估（approve/needs changes/major revision needed）
-5. 涉及到的调用链路,如出现问题会导致哪个调用链异常
-
-请将你的响应格式化为 JSON：
-{{
-    "summary": "...",
-    "issues": [
-        {{"severity": "high", "description": "...", "line": 10}}
-    ],
-    "suggestions": ["..."],
-    "assessment": "approve"
-}}
-"""
-        return prompt
+        return "\n".join(prompt_parts)
 
     def _parse_response(
             self,

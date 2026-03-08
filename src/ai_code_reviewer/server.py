@@ -37,6 +37,7 @@ class ReviewParams(BaseModel):
     provider: str = "anthropic"
     base_url: Optional[str] = None
     project_root: str = "."
+    manual_files: Optional[str] = None  # 用户手动指定的相关文件（逗号分隔的文件路径列表）
 
 
 class ReviewProgress(BaseModel):
@@ -105,7 +106,21 @@ async def start_review(params: ReviewParams):
 
         # 步骤 2：分析代码
         print(f"[步骤 2/3] 分析代码更改...")
-        analyzer = CodeAnalyzer(params.project_root)
+
+        # 解析用户手动指定的相关文件
+        manual_file_list = []
+        if params.manual_files:
+            manual_file_list = [f.strip() for f in params.manual_files.split(",") if f.strip()]
+            print(f"  用户指定的相关文件：{len(manual_file_list)} 个")
+
+        # 创建 Analyzer，传入 fetcher 用于从远程获取代码
+        analyzer = CodeAnalyzer(
+            params.project_root,
+            fetcher=fetcher,
+            ref=params.branch,
+            manual_files=manual_file_list if manual_file_list else None,
+            auto_fetch_all=True  # 如果用户未提供文件，自动获取全部
+        )
 
         review_requests = []
         for file_diff in diffs:
@@ -114,12 +129,27 @@ async def start_review(params: ReviewParams):
 
             for element in elements:
                 chain = analyzer.trace_references(element)
+                print(f"    {element.name}: 找到 {len(chain.callers)} 个直接调用者，{len(chain.call_chain)} 条完整调用链")
+
+                for call_chain in chain.call_chain:
+                    chain_str = " <- ".join([f"{e.filename}#{e.name}" for e in call_chain])
+                    print(f"      调用链：{chain_str}")
+
+                # 格式化调用链信息
+                call_chain_info = ""
+                if chain.call_chain:
+                    call_chain_info = "\n".join([
+                        " -> ".join([f"{e.filename}#{e.name}" for e in cc])
+                        for cc in chain.call_chain
+                    ])
+
                 review_requests.append(ReviewRequest(
                     diff_content=file_diff.diff,
                     context_code=chain.full_context,
                     filename=file_diff.filename,
                     element_name=element.name,
-                    element_type=element.element_type
+                    element_type=element.element_type,
+                    call_chain_info=call_chain_info
                 ))
 
         print(f"  总计：{len(review_requests)} 个审查项")
