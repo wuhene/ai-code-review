@@ -141,7 +141,7 @@ class GitDiffFetcher:
             }
 
             async def fetch():
-                async with httpx.AsyncClient(timeout=60.0) as client:
+                async with httpx.AswyncClient(timeout=60.0) as client:
                     response = await client.get(url, headers=headers, params=params)
                     response.raise_for_status()
                     return response.json()
