@@ -36,11 +36,11 @@ class AIReviewer:
     """将代码发送给 AI 进行审查，支持多种 LLM 提供商。"""
 
     def __init__(
-        self,
-        api_key: Optional[str] = None,
-        model: str = "claude-sonnet-4-20250929",
-        base_url: Optional[str] = None,
-        provider: str = "anthropic"
+            self,
+            api_key: Optional[str] = None,
+            model: str = "claude-sonnet-4-20250929",
+            base_url: Optional[str] = None,
+            provider: str = "anthropic"
     ):
         """
         初始化 AI 审查器。
@@ -137,6 +137,7 @@ class AIReviewer:
 
         # 发送请求
         try:
+            print(f"  发送给ai的请求url：{url},headers:{headers},body:{body}")
             response = httpx.post(url, headers=headers, json=body, timeout=120)
             response.raise_for_status()
             result = response.json()
@@ -185,7 +186,6 @@ class AIReviewer:
 3. 安全问题
 4. 性能影响
 5. 可维护性和可读性
-6. 涉及到的调用链路,如出现问题会导致哪个调用链异常
 
 ## 更改的文件：{request.filename}
 
@@ -204,6 +204,7 @@ class AIReviewer:
 2. 发现的问题（严重程度：critical/high/medium/low）
 3. 具体的改进建议
 4. 总体评估（approve/needs changes/major revision needed）
+5. 涉及到的调用链路,如出现问题会导致哪个调用链异常
 
 请将你的响应格式化为 JSON：
 {{
@@ -218,10 +219,10 @@ class AIReviewer:
         return prompt
 
     def _parse_response(
-        self,
-        filename: str,
-        element_name: Optional[str],
-        response_text: str
+            self,
+            filename: str,
+            element_name: Optional[str],
+            response_text: str
     ) -> ReviewResult:
         """将 AI 响应解析为结构化结果。"""
         issues = []
