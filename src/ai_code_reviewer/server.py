@@ -94,7 +94,7 @@ async def start_review(params: ReviewParams):
         )
 
         diffs = fetcher.get_branch_diff(params.branch, params.base)
-        print(f"  找到 {len(diffs)} 个 Python 文件已更改")
+        print(f"  找到 {len(diffs)} 个文件已更改")
 
         if not diffs:
             return {
