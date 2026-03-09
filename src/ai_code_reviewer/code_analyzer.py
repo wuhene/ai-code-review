@@ -139,6 +139,22 @@ class CodeAnalyzer:
         if not added_lines:
             return elements
 
+        # 判断文件类型
+        is_python = filename.endswith('.py')
+
+        if is_python:
+            # Python 文件：使用 AST 解析
+            elements = self._extract_python_elements(filename, added_lines)
+        else:
+            # 非 Python 文件（Java, Go 等）：使用正则表达式提取
+            elements = self._extract_elements_by_regex(diff_content, filename, added_lines)
+
+        return elements
+
+    def _extract_python_elements(self, filename: str, added_lines: list[int]) -> list[CodeElement]:
+        """使用 AST 提取 Python 文件的元素。"""
+        elements = []
+
         # 优先从远程获取文件内容
         file_content = self._get_file_content(filename)
 
@@ -156,7 +172,105 @@ class CodeAnalyzer:
                 pass
         else:
             # 如果无法获取，尝试从 diff 中提取
-            elements.extend(self._extract_from_diff_new_file(diff_content, filename))
+            elements.extend(self._extract_from_diff_new_file("", filename))
+
+        return elements
+
+    def _extract_elements_by_regex(self, diff_content: str, filename: str, added_lines: list[int]) -> list[CodeElement]:
+        """
+        使用正则表达式提取非 Python 文件的元素（支持 Java, Go 等）。
+        """
+        elements = []
+
+        # 尝试从远程获取文件内容
+        file_content = self._get_file_content(filename)
+
+        if file_content:
+            self._file_cache[filename] = file_content
+            lines = file_content.split('\n')
+
+            # 查找新增行附近的类和方法定义
+            for line_num in added_lines:
+                # 检查附近 20 行内的类和方法定义
+                start = max(0, line_num - 20)
+                end = min(len(lines), line_num + 10)
+
+                for i in range(start, end):
+                    line = lines[i]
+                    # Java/Go 类: public class XXX, class XXX
+                    class_match = re.match(r'\s*(public\s+)?class\s+(\w+)', line)
+                    if class_match:
+                        elements.append(CodeElement(
+                            name=class_match.group(2),
+                            element_type="class",
+                            filename=filename,
+                            line_start=i + 1,
+                            line_end=i + 2,
+                            source=line
+                        ))
+                        continue
+
+                    # Java 方法: public XXX returnType methodName(...)
+                    method_match = re.match(r'\s*(public|private|protected)?\s+[\w<>,\s]+\s+(\w+)\s*\([^)]*\)', line)
+                    if method_match and not line.strip().startswith('//') and not line.strip().startswith('/*'):
+                        method_name = method_match.group(2)
+                        # 排除构造函数
+                        if method_name and method_name[0].islower():
+                            elements.append(CodeElement(
+                                name=method_name,
+                                element_type="method",
+                                filename=filename,
+                                line_start=i + 1,
+                                line_end=i + 2,
+                                source=line
+                            ))
+
+        # 如果没有获取到文件内容，从 diff 中提取
+        if not elements and diff_content:
+            elements.extend(self._extract_elements_from_diff_simple(diff_content, filename))
+
+        return elements
+
+    def _extract_elements_from_diff_simple(self, diff_content: str, filename: str) -> list[CodeElement]:
+        """从 diff 中简单提取元素（无 AST 时的备用方案）。"""
+        elements = []
+        current_line = 0
+
+        for line in diff_content.split("\n"):
+            if line.startswith("@@"):
+                match = re.search(r"\+(\d+)", line)
+                if match:
+                    current_line = int(match.group(1))
+            elif line.startswith("+") and not line.startswith("+++"):
+                # 检查是否是类或方法定义
+                class_match = re.match(r'\s*(public\s+)?class\s+(\w+)', line)
+                if class_match:
+                    elements.append(CodeElement(
+                        name=class_match.group(2),
+                        element_type="class",
+                        filename=filename,
+                        line_start=current_line,
+                        line_end=current_line + 1,
+                        source=line
+                    ))
+
+                # 检查方法定义
+                method_match = re.match(r'\s*(public|private|protected)?\s+[\w<>,\s]+\s+(\w+)\s*\([^)]*\)', line)
+                if method_match and not line.strip().startswith('//'):
+                    method_name = method_match.group(2)
+                    if method_name and method_name[0].islower():
+                        elements.append(CodeElement(
+                            name=method_name,
+                            element_type="method",
+                            filename=filename,
+                            line_start=current_line,
+                            line_end=current_line + 1,
+                            source=line
+                        ))
+
+                current_line += 1
+            elif not line.startswith("-"):
+                current_line += 1
 
         return elements
 

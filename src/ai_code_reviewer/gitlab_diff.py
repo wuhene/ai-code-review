@@ -57,25 +57,27 @@ class GitDiffFetcher:
             self.api_base = "https://api.github.com"
             self.content_base = "https://raw.githubusercontent.com"
         elif self.platform == "gitlab":
-            # 如果是 https://gitlab.example.com/group/repo 格式，提取域名部分
-            if repo_url.startswith("http"):
+            # 优先使用用户提供的 base_url（私有 GitLab 部署时）
+            if base_url:
+                # 用户提供了自定义 URL，直接使用
+                self.api_base = base_url.rstrip('/')
+                self.content_base = base_url.rstrip('/')
+            elif repo_url.startswith("http"):
+                # 从 repo_url 提取域名，需要添加 /api/v4
                 parsed = urlparse(repo_url)
-                self.api_base = f"{parsed.scheme}://{parsed.netloc}"
-                self.content_base = self.api_base
-                if base_url:
-                    self.api_base = base_url
-                    self.content_base = base_url
+                self.api_base = f"{parsed.scheme}://{parsed.netloc}/api/v4"
+                self.content_base = f"{parsed.scheme}://{parsed.netloc}"
             else:
+                # 默认使用 gitlab.com
                 self.api_base = "https://gitlab.com/api/v4"
                 self.content_base = "https://gitlab.com"
-                if base_url:
-                    self.api_base = base_url
-                    self.content_base = base_url
         else:
             raise ValueError(f"不支持的平台：{self.platform}")
 
         # 缓存已获取的远程文件
         self._file_cache: Dict[str, str] = {}
+        # 缓存项目 ID（避免重复调用 API）
+        self._cached_project_id: Optional[str] = None
 
     async def get_branch_diff(self, branch: str, base: str = "master") -> list[FileDiff]:
         """
@@ -105,7 +107,9 @@ class GitDiffFetcher:
             raise ValueError(f"不支持的平台：{self.platform}")
 
     def _get_github_diff(self, branch: str, base: str) -> list[FileDiff]:
-        """从 GitHub API 获取分支差异。"""
+        """从 GitHub API 获取分支差异（同步版本）。"""
+        import httpx
+
         diffs = []
 
         try:
@@ -117,21 +121,15 @@ class GitDiffFetcher:
 
             url = f"{self.api_base}/repos/{self.repo_url}/compare/{base}...{branch}"
 
-            async def fetch():
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    response = await client.get(url, headers=headers)
-                    response.raise_for_status()
-                    return response.json()
-
-            data = asyncio.run(fetch())
+            with httpx.Client(timeout=60.0) as client:
+                response = client.get(url, headers=headers)
+                response.raise_for_status()
+                data = response.json()
 
             if "error" in data:
                 raise RuntimeError(f"GitHub API 错误：{data['message']}")
 
             for file in data.get("files", []):
-                if not file.get("filename", "").endswith(".py"):
-                    continue
-
                 diffs.append(FileDiff(
                     filename=file["filename"],
                     diff=file.get("patch", ""),
@@ -166,8 +164,6 @@ class GitDiffFetcher:
                 raise RuntimeError(f"GitHub API 错误：{data['message']}")
 
             for file in data.get("files", []):
-                if not file.get("filename", "").endswith(".py"):
-                    continue
 
                 diffs.append(FileDiff(
                     filename=file["filename"],
@@ -182,7 +178,9 @@ class GitDiffFetcher:
         return diffs
 
     def _get_gitlab_diff(self, branch: str, base: str) -> list[FileDiff]:
-        """从 GitLab API 获取分支差异。"""
+        """从 GitLab API 获取分支差异（同步版本）。"""
+        import httpx
+
         diffs = []
 
         try:
@@ -199,13 +197,10 @@ class GitDiffFetcher:
                 "to": branch
             }
 
-            async def fetch():
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    response = await client.get(url, headers=headers, params=params)
-                    response.raise_for_status()
-                    return response.json()
-
-            data = asyncio.run(fetch())
+            with httpx.Client(timeout=60.0) as client:
+                response = client.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                data = response.json()
 
             if "error" in data or "message" in data:
                 raise RuntimeError(f"GitLab API 错误：{data.get('error', data.get('message'))}")
@@ -213,7 +208,7 @@ class GitDiffFetcher:
             for file in data.get("diffs", []):
                 filename = file.get("new_path") or file.get("old_path")
 
-                if not filename or not filename.endswith(".py"):
+                if not filename:
                     continue
 
                 diffs.append(FileDiff(
@@ -238,7 +233,7 @@ class GitDiffFetcher:
                 "Accept": "application/json"
             }
 
-            project_id = self._get_project_id()
+            project_id = await self._get_project_id_async()
 
             url = f"{self.api_base}/projects/{project_id}/repository/compare"
             params = {
@@ -257,9 +252,6 @@ class GitDiffFetcher:
             for file in data.get("diffs", []):
                 filename = file.get("new_path") or file.get("old_path")
 
-                if not filename or not filename.endswith(".py"):
-                    continue
-
                 diffs.append(FileDiff(
                     filename=filename,
                     diff=file.get("diff", ""),
@@ -272,8 +264,12 @@ class GitDiffFetcher:
 
         return diffs
 
-    def _get_project_id(self) -> str:
-        """获取 GitLab 项目 ID。"""
+    async def _get_project_id_async(self) -> str:
+        """获取 GitLab 项目 ID（异步版本）。"""
+        # 如果已经缓存，直接返回
+        if self._cached_project_id:
+            return self._cached_project_id
+
         try:
             path = self.repo_url
             if path.startswith("http"):
@@ -288,39 +284,67 @@ class GitDiffFetcher:
                 "Accept": "application/json"
             }
 
-            async def fetch():
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    # 方法1：直接通过编码路径获取项目
-                    url = f"{self.api_base}/projects/{encoded_path}"
-                    print(f"  [调试] 尝试获取项目: {url}")
-                    response = await client.get(url, headers=headers)
+            print(f"  [调试] Token 前5位: {self.token[:5] if self.token else 'None'}...")
+            print(f"  [调试] API URL: {self.api_base}")
+
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                # 方法1：直接通过编码路径获取项目
+                url = f"{self.api_base}/projects/{encoded_path}"
+                print(f"  [调试] 尝试获取项目: {url}")
+                response = await client.get(url, headers=headers)
+                print(f"  [调试] 响应状态: {response.status_code}")
+
+                if response.status_code == 200:
+                    project = response.json()
+                    project_id = str(project["id"])
+                    print(f"  [调试] 找到项目: {project.get('name')} (id: {project_id})")
+                    self._cached_project_id = project_id
+                    return project_id
+                elif response.status_code == 404:
+                    # 方法2：使用 search API 作为备用
+                    print(f"  [调试] 直接获取失败，尝试搜索...")
+                    target_path = path.rsplit("/", 1)[-1]
+                    search_url = f"{self.api_base}/projects?search={target_path}"
+                    response = await client.get(search_url, headers=headers)
+                    print(f"  [调试] 搜索响应状态: {response.status_code}")
+
                     if response.status_code == 200:
-                        project = response.json()
-                        print(f"  [调试] 找到项目: {project.get('name')} (id: {project.get('id')})")
-                        return str(project["id"])
-                    elif response.status_code == 404:
-                        # 方法2：使用 search API 作为备用
-                        print(f"  [调试] 直接获取失败，尝试搜索...")
-                        target_path = path.rsplit("/", 1)[-1]
-                        search_url = f"{self.api_base}/projects?search={target_path}"
-                        response = await client.get(search_url, headers=headers)
-                        response.raise_for_status()
                         projects = response.json()
-                        print(f"  [调试] 搜索结果: {len(projects)} 个项目")
+                        print(f"  [调试] 搜索结果类型: {type(projects)}")
+                        print(f"  [调试] 搜索结果: {projects}")
 
-                        for project in projects:
-                            if project["path_with_namespace"] == path:
-                                return str(project["id"])
+                        # 检查是否是正确的数组格式
+                        if isinstance(projects, list):
+                            for project in projects:
+                                if project["path_with_namespace"] == path:
+                                    project_id = str(project["id"])
+                                    self._cached_project_id = project_id
+                                    return project_id
 
-                        if projects:
-                            return str(projects[0]["id"])
+                            if projects:
+                                project_id = str(projects[0]["id"])
+                                self._cached_project_id = project_id
+                                return project_id
+                        elif isinstance(projects, dict):
+                            # 可能返回了错误或其他信息
+                            print(f"  [调试] 搜索返回字典: {projects}")
 
-                    raise RuntimeError(f"未找到项目：{path}")
-
-            return asyncio.run(fetch())
+                raise RuntimeError(f"未找到项目：{path}，状态码：{response.status_code}")
 
         except Exception as e:
             print(f"  [调试] 获取项目ID失败: {e}")
+            return self._parse_project_id_from_url()
+
+    def _get_project_id(self) -> str:
+        """获取 GitLab 项目 ID（同步版本，内部调用异步版本）。"""
+        # 如果已经缓存，直接返回
+        if self._cached_project_id:
+            return self._cached_project_id
+
+        try:
+            return asyncio.run(self._get_project_id_async())
+        except Exception as e:
+            print(f"  [调试] 同步获取项目ID失败: {e}")
             return self._parse_project_id_from_url()
 
     def _url_encode_group_path(self, path: str) -> str:
@@ -338,8 +362,12 @@ class GitDiffFetcher:
 
         parts = path.split("/")
         if len(parts) >= 2:
-            return path
-        return parts[-1]
+            project_id = path
+        else:
+            project_id = parts[-1]
+
+        self._cached_project_id = project_id
+        return project_id
 
     # ========== 新增方法：获取远程文件内容 ==========
 
@@ -391,7 +419,9 @@ class GitDiffFetcher:
             return None
 
     def _get_github_file_content(self, filepath: str, ref: str) -> Optional[str]:
-        """从 GitHub 获取文件内容。"""
+        """从 GitHub 获取文件内容（同步版本）。"""
+        import httpx
+
         headers = {
             "Authorization": f"token {self.token}",
             "Accept": "application/vnd.github.v3+json"
@@ -400,16 +430,13 @@ class GitDiffFetcher:
         # GitHub raw content URL: https://raw.githubusercontent.com/owner/repo/ref/path/to/file
         url = f"{self.content_base}/{self.repo_url}/{ref}/{filepath}"
 
-        async def fetch():
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, headers=headers)
-                response.raise_for_status()
-                return response.text
-
         try:
-            content = asyncio.run(fetch())
-            self._file_cache[f"{filepath}@{ref}"] = content
-            return content
+            with httpx.Client(timeout=30.0) as client:
+                response = client.get(url, headers=headers)
+                response.raise_for_status()
+                content = response.text
+                self._file_cache[f"{filepath}@{ref}"] = content
+                return content
         except Exception:
             return None
 
@@ -431,7 +458,10 @@ class GitDiffFetcher:
         return content
 
     def _get_gitlab_file_content(self, filepath: str, ref: str) -> Optional[str]:
-        """从 GitLab 获取文件内容。"""
+        """从 GitLab 获取文件内容（同步版本）。"""
+        import base64
+        import httpx
+
         headers = {
             "PRIVATE-TOKEN": self.token,
             "Accept": "application/json"
@@ -440,35 +470,34 @@ class GitDiffFetcher:
         project_id = self._get_project_id()
 
         # GitLab API: GET /projects/:id/repository/files/:file_path
-        url = f"{self.api_base}/projects/{project_id}/repository/files/{filepath}"
+        url = f"{self.api_base}/projects/{project_id}/repository/files/{quote(filepath, safe='')}"
         params = {"ref": ref}
 
-        async def fetch():
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, headers=headers, params=params)
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.get(url, headers=headers, params=params)
                 response.raise_for_status()
                 data = response.json()
                 # GitLab 返回的内容是 base64 编码的
-                import base64
-                return base64.b64decode(data["content"]).decode('utf-8')
-
-        try:
-            content = asyncio.run(fetch())
-            self._file_cache[f"{filepath}@{ref}"] = content
-            return content
-        except Exception:
+                content = base64.b64decode(data["content"]).decode('utf-8')
+                self._file_cache[f"{filepath}@{ref}"] = content
+                return content
+        except Exception as e:
+            print(f"  [调试] 获取文件失败: {e}")
             return None
 
     async def _get_gitlab_file_content_async(self, filepath: str, ref: str) -> Optional[str]:
         """异步从 GitLab 获取文件内容。"""
+        import base64
+
         headers = {
             "PRIVATE-TOKEN": self.token,
             "Accept": "application/json"
         }
 
-        project_id = self._get_project_id()
+        project_id = await self._get_project_id_async()
 
-        url = f"{self.api_base}/projects/{project_id}/repository/files/{filepath}"
+        url = f"{self.api_base}/projects/{project_id}/repository/files/{quote(filepath, safe='')}"
         params = {"ref": ref}
 
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -476,7 +505,6 @@ class GitDiffFetcher:
             response.raise_for_status()
             data = response.json()
 
-        import base64
         content = base64.b64decode(data["content"]).decode('utf-8')
         self._file_cache[f"{filepath}@{ref}"] = content
         return content
@@ -545,7 +573,9 @@ class GitDiffFetcher:
         return [f for f in all_files if f.endswith('.py')]
 
     def _get_github_tree(self, ref: str, recursive: bool = True) -> List[str]:
-        """从 GitHub 获取仓库文件列表。"""
+        """从 GitHub 获取仓库文件列表（同步版本）。"""
+        import httpx
+
         files = []
         headers = {
             "Authorization": f"token {self.token}",
@@ -554,14 +584,12 @@ class GitDiffFetcher:
 
         url = f"{self.api_base}/repos/{self.repo_url}/git/trees/{ref}"
 
-        async def fetch():
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.get(url, headers=headers)
-                response.raise_for_status()
-                return response.json()
-
         try:
-            data = asyncio.run(fetch())
+            with httpx.Client(timeout=60.0) as client:
+                response = client.get(url, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+
             tree = data.get("tree", [])
 
             for item in tree:
@@ -578,7 +606,9 @@ class GitDiffFetcher:
             return files
 
     def _get_gitlab_tree(self, ref: str, recursive: bool = True) -> List[str]:
-        """从 GitLab 获取仓库文件列表。"""
+        """从 GitLab 获取仓库文件列表（同步版本）。"""
+        import httpx
+
         files = []
         headers = {
             "PRIVATE-TOKEN": self.token,
@@ -591,14 +621,11 @@ class GitDiffFetcher:
         url = f"{self.api_base}/projects/{project_id}/repository/tree"
         params = {"ref": ref, "recursive": 1 if recursive else 0}
 
-        async def fetch():
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.get(url, headers=headers, params=params)
-                response.raise_for_status()
-                return response.json()
-
         try:
-            data = asyncio.run(fetch())
+            with httpx.Client(timeout=60.0) as client:
+                response = client.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                data = response.json()
 
             for item in data:
                 if item.get("type") == "blob":

@@ -128,36 +128,18 @@ async def start_review(params: ReviewParams):
             elements = analyzer.extract_changed_elements(file_diff.diff, file_diff.new_path)
             print(f"  {file_diff.filename}: {len(elements)} 个元素已更改")
 
-            for element in elements:
-                # 构建完整的审查上下文（包含两个分支的完整代码）
-                print(f"    正在收集 {element.name} 的完整上下文...")
-                full_context = analyzer.build_review_context(file_diff.diff, element)
-
-                chain = analyzer.trace_references(element)
-                print(f"    {element.name}: 找到 {len(chain.callers)} 个直接调用者，{len(chain.call_chain)} 条完整调用链")
-
-                for call_chain in chain.call_chain:
-                    chain_str = " <- ".join([f"{e.filename}#{e.name}" for e in call_chain])
-                    print(f"      调用链：{chain_str}")
-
-                # 格式化调用链信息
-                call_chain_info = ""
-                if chain.call_chain:
-                    call_chain_info = "\n".join([
-                        " -> ".join([f"{e.filename}#{e.name}" for e in cc])
-                        for cc in chain.call_chain
-                    ])
-
+            # 简化：每个文件只发送一次审查请求，包含完整 diff
+            if elements:
                 review_requests.append(ReviewRequest(
                     diff_content=file_diff.diff,
-                    context_code=full_context,  # 使用新的完整上下文
+                    context_code=file_diff.diff,  # 直接使用 diff 内容
                     filename=file_diff.filename,
-                    element_name=element.name,
-                    element_type=element.element_type,
-                    call_chain_info=call_chain_info
+                    element_name=elements[0].name if elements else file_diff.filename,
+                    element_type="file",
+                    call_chain_info=""
                 ))
 
-        print(f"  总计：{len(review_requests)} 个审查项")
+        print(f"  总计：{len(review_requests)} 个审查项（按文件分组）")
 
         # 步骤 3：AI 审查
         print(f"[步骤 3/3] 发送给 AI 进行审查...")
@@ -169,6 +151,7 @@ async def start_review(params: ReviewParams):
         )
 
         results = reviewer.review_batch(review_requests)
+        print(f"  AI 审查完成，共 {len(results)} 个结果")
 
         # 格式化结果
         formatted_results = []
@@ -187,6 +170,7 @@ async def start_review(params: ReviewParams):
         total_issues = sum(len(r.issues) for r in results)
         total_suggestions = sum(len(r.suggestions) for r in results)
 
+        print(f"  准备返回结果给前端")
         return {
             "success": True,
             "message": f"审查完成！发现 {total_issues} 个问题，{total_suggestions} 条建议",

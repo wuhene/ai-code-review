@@ -138,17 +138,26 @@ class AIReviewer:
 
         # 发送请求
         try:
-            print(f"  发送给 AI 的请求 url: {url},header:{headers},body:{body}")
+            print(f"  发送给 AI 的请求 url: {url}")
+            print(f"  请求体大小: {len(str(body))} 字符")
+            print(f"  请求体内容: {str(body)} 字符")
             response = httpx.post(url, headers=headers, json=body, timeout=120)
+            print(f"  AI 响应状态码: {response.status_code}")
             response.raise_for_status()
             result = response.json()
+            print(f"  AI 响应大小: {len(str(result))} 字符")
+            print(f"  AI 响应内容: {str(result)} 字符")
 
             # 解析不同格式的响应
             if self.provider == "anthropic":
-                return result.get("content", [{}])[0].get("text", "")
+                content = result.get("content", [{}])[0].get("text", "")
+                print(f"  解析到 anthropic 响应内容，长度: {len(content)} 字符")
+                return content
             else:
                 # OpenAI 格式
-                return result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                print(f"  解析到 OpenAI 响应内容，长度: {len(content)} 字符")
+                return content
 
         except httpx.HTTPError as e:
             raise RuntimeError(f"LLM API 调用失败：{e}")
