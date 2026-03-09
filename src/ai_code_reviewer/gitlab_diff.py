@@ -74,7 +74,7 @@ class GitDiffFetcher:
         else:
             raise ValueError(f"不支持的平台：{self.platform}")
 
-        #  缓存已获取的远程文件
+        # 缓存已获取的远程文件
         self._file_cache: Dict[str, str] = {}
 
     async def get_branch_diff(self, branch: str, base: str = "master") -> list[FileDiff]:
