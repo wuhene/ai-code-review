@@ -77,7 +77,7 @@ class GitDiffFetcher:
         # 缓存已获取的远程文件
         self._file_cache: Dict[str, str] = {}
 
-    def get_branch_diff(self, branch: str, base: str = "master") -> list[FileDiff]:
+    async def get_branch_diff(self, branch: str, base: str = "master") -> list[FileDiff]:
         """
         获取分支与基础分支之间的差异。
 
@@ -89,9 +89,9 @@ class GitDiffFetcher:
             每个更改文件的 FileDiff 对象列表
         """
         if self.platform == "github":
-            return self._get_github_diff(branch, base)
+            return await self._get_github_diff_async(branch, base)
         elif self.platform == "gitlab":
-            return self._get_gitlab_diff(branch, base)
+            return await self._get_gitlab_diff_async(branch, base)
         else:
             raise ValueError(f"不支持的平台：{self.platform}")
 

@@ -51,7 +51,8 @@ class CodeAnalyzer:
         self,
         project_root: str,
         fetcher: Optional[GitDiffFetcher] = None,
-        ref: str = "master",  # 要分析的分支名
+        ref: str = "master",  # 要分析的分支名（功能分支）
+        base_ref: str = "master",  # 基础分支（主分支）
         manual_files: Optional[List[str]] = None,  # 用户手动指定的相关文件
         auto_fetch_all: bool = True  # 如果没有用户提供文件，是否自动获取全部
     ):
@@ -61,20 +62,65 @@ class CodeAnalyzer:
         Args:
             project_root: 本地项目根目录（用于缓存和本地搜索）
             fetcher: GitDiffFetcher 实例（用于从远程获取代码）
-            ref: 要分析的分支名称
+            ref: 要分析的分支名称（功能分支）
+            base_ref: 基础分支名称（主分支，默认 master）
             manual_files: 用户手动指定的相关文件路径列表
             auto_fetch_all: 如果没有用户提供文件，是否自动获取全部 Python 文件
         """
         self.project_root = Path(project_root)
         self.fetcher = fetcher
-        self.ref = ref
+        self.ref = ref  # 功能分支
+        self.base_ref = base_ref  # 主分支
         self.manual_files = manual_files or []
         self.auto_fetch_all = auto_fetch_all
 
-        self._file_cache: dict[str, str] = {}
+        self._file_cache: dict[str, str] = {}  # 功能分支代码缓存
+        self._base_file_cache: dict[str, str] = {}  # 主分支代码缓存
         self._ast_cache: dict[str, ast.AST] = {}
         self._call_graph: Optional[dict] = None  # 调用图缓存
         self._all_functions: List[tuple] = []  # 所有函数信息
+
+    def get_file_content_from_branch(self, filepath: str, branch: str = None) -> Optional[str]:
+        """获取指定分支的文件内容。"""
+        if branch is None:
+            branch = self.ref
+
+        cache = self._file_cache if branch == self.ref else self._base_file_cache
+
+        # 先检查缓存
+        cache_key = f"{filepath}@{branch}"
+        if cache_key in cache:
+            return cache[cache_key]
+
+        # 尝试从远程获取
+        if self.fetcher:
+            content = self.fetcher.get_file_content(filepath, branch)
+            if content:
+                cache[cache_key] = content
+                return content
+
+        # 尝试从本地读取
+        file_path = self.project_root / filepath
+        if file_path.exists():
+            try:
+                content = file_path.read_text(encoding='utf-8')
+                cache[cache_key] = content
+                return content
+            except Exception:
+                pass
+
+        return None
+
+    def get_file_content_both_branches(self, filepath: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        获取文件在两个分支的完整代码。
+
+        Returns:
+            (功能分支代码, 主分支代码)
+        """
+        branch_content = self.get_file_content_from_branch(filepath, self.ref)
+        base_content = self.get_file_content_from_branch(filepath, self.base_ref)
+        return branch_content, base_content
 
     def extract_changed_elements(self, diff_content: str, filename: str) -> list[CodeElement]:
         """
@@ -738,5 +784,124 @@ class CodeAnalyzer:
                     context_parts.append(f"\n=== 上下文：{filepath} ===\n{content[:2000]}")
                 except Exception:
                     pass
+
+        return "\n".join(context_parts)
+
+    def collect_call_chain_files(self, element: CodeElement) -> Dict[str, dict]:
+        """
+        收集调用链涉及的所有文件，并获取它们在两个分支的完整代码。
+
+        Args:
+            element: 改动的代码元素
+
+        Returns:
+            {
+                'filepath': {
+                    'branch_code': '功能分支完整代码',
+                    'base_code': '主分支完整代码',
+                    'is_changed': True/False
+                }
+            }
+        """
+        result = {}
+
+        # 1. 先获取改动文件本身的完整代码
+        changed_file = element.filename
+        branch_code, base_code = self.get_file_content_both_branches(changed_file)
+
+        if branch_code:
+            result[changed_file] = {
+                'branch_code': branch_code,
+                'base_code': base_code,
+                'is_changed': True
+            }
+
+        # 2. 获取调用链中涉及的所有类的文件
+        chain = self.trace_references(element)
+
+        # 收集所有相关文件
+        related_files = set()
+        for full_chain in chain.call_chain:
+            for node in full_chain:
+                if node.filename != changed_file:
+                    related_files.add(node.filename)
+
+        # 3. 获取这些相关文件的完整代码（两个分支）
+        for filepath in related_files:
+            if filepath in result:
+                continue
+
+            branch_code, base_code = self.get_file_content_both_branches(filepath)
+            if branch_code:
+                result[filepath] = {
+                    'branch_code': branch_code,
+                    'base_code': base_code,
+                    'is_changed': False
+                }
+
+        return result
+
+    def build_review_context(self, diff_content: str, element: CodeElement) -> str:
+        """
+        构建用于 AI 审查的完整上下文。
+
+        包含：
+        1. diff 内容
+        2. 改动类在功能分支的完整代码
+        3. 改动类在主分支的完整代码
+        4. 调用链涉及的所有类的完整代码
+
+        Args:
+            diff_content: diff 内容
+            element: 改动的代码元素
+
+        Returns:
+            用于发送给 AI 的完整上下文字符串
+        """
+        context_parts = []
+
+        # 1. 添加 diff
+        context_parts.append("=" * 60)
+        context_parts.append("## DIFF (变更内容)")
+        context_parts.append("=" * 60)
+        context_parts.append(diff_content)
+
+        # 2. 获取调用链涉及的所有文件
+        all_files = self.collect_call_chain_files(element)
+
+        # 3. 添加每个文件的完整代码（两分支版本）
+        for filepath, codes in all_files.items():
+            is_changed = codes['is_changed']
+            branch_code = codes['branch_code']
+            base_code = codes['base_code']
+
+            if is_changed:
+                # 改动文件：显示两分支对比
+                context_parts.append("\n" + "=" * 60)
+                context_parts.append(f"## 改动文件: {filepath} (功能分支)")
+                context_parts.append("=" * 60)
+                context_parts.append(branch_code or "(文件不存在)")
+
+                if base_code:
+                    context_parts.append("\n" + "-" * 60)
+                    context_parts.append(f"## {filepath} (主分支/原版)")
+                    context_parts.append("-" * 60)
+                    context_parts.append(base_code)
+            else:
+                # 调用链相关文件
+                context_parts.append("\n" + "=" * 60)
+                context_parts.append(f"## 调用链相关: {filepath}")
+                context_parts.append("=" * 60)
+                context_parts.append(branch_code or "(文件不存在)")
+
+        # 4. 添加调用链说明
+        chain = self.trace_references(element)
+        if chain.call_chain:
+            context_parts.append("\n" + "=" * 60)
+            context_parts.append("## 调用链")
+            context_parts.append("=" * 60)
+            for i, call_chain in enumerate(chain.call_chain, 1):
+                chain_str = " <- ".join([f"{e.filename}#{e.name}" for e in call_chain])
+                context_parts.append(f"链路 {i}: {chain_str}")
 
         return "\n".join(context_parts)

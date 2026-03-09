@@ -94,7 +94,7 @@ async def start_review(params: ReviewParams):
             base_url=params.gitlab_url if platform == "gitlab" else None
         )
 
-        diffs = fetcher.get_branch_diff(params.branch, params.base)
+        diffs = await fetcher.get_branch_diff(params.branch, params.base)
         print(f"  找到 {len(diffs)} 个文件已更改")
 
         if not diffs:
@@ -118,6 +118,7 @@ async def start_review(params: ReviewParams):
             params.project_root,
             fetcher=fetcher,
             ref=params.branch,
+            base_ref=params.base,  # 主分支
             manual_files=manual_file_list if manual_file_list else None,
             auto_fetch_all=True  # 如果用户未提供文件，自动获取全部
         )
@@ -128,6 +129,10 @@ async def start_review(params: ReviewParams):
             print(f"  {file_diff.filename}: {len(elements)} 个元素已更改")
 
             for element in elements:
+                # 构建完整的审查上下文（包含两个分支的完整代码）
+                print(f"    正在收集 {element.name} 的完整上下文...")
+                full_context = analyzer.build_review_context(file_diff.diff, element)
+
                 chain = analyzer.trace_references(element)
                 print(f"    {element.name}: 找到 {len(chain.callers)} 个直接调用者，{len(chain.call_chain)} 条完整调用链")
 
@@ -145,7 +150,7 @@ async def start_review(params: ReviewParams):
 
                 review_requests.append(ReviewRequest(
                     diff_content=file_diff.diff,
-                    context_code=chain.full_context,
+                    context_code=full_context,  # 使用新的完整上下文
                     filename=file_diff.filename,
                     element_name=element.name,
                     element_type=element.element_type,
