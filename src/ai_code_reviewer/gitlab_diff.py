@@ -280,7 +280,8 @@ class GitDiffFetcher:
                 parsed = urlparse(path)
                 path = parsed.path.lstrip("/")
 
-            encoded_path = self._url_encode_group_path(path)
+            # URL 编码路径（将 / 编码为 %2F）
+            encoded_path = quote(path, safe='')
 
             headers = {
                 "PRIVATE-TOKEN": self.token,
@@ -289,24 +290,37 @@ class GitDiffFetcher:
 
             async def fetch():
                 async with httpx.AsyncClient(timeout=30.0) as client:
-                    url = f"{self.api_base}/projects?search={encoded_path}"
+                    # 方法1：直接通过编码路径获取项目
+                    url = f"{self.api_base}/projects/{encoded_path}"
+                    print(f"  [调试] 尝试获取项目: {url}")
                     response = await client.get(url, headers=headers)
-                    response.raise_for_status()
-                    projects = response.json()
+                    if response.status_code == 200:
+                        project = response.json()
+                        print(f"  [调试] 找到项目: {project.get('name')} (id: {project.get('id')})")
+                        return str(project["id"])
+                    elif response.status_code == 404:
+                        # 方法2：使用 search API 作为备用
+                        print(f"  [调试] 直接获取失败，尝试搜索...")
+                        target_path = path.rsplit("/", 1)[-1]
+                        search_url = f"{self.api_base}/projects?search={target_path}"
+                        response = await client.get(search_url, headers=headers)
+                        response.raise_for_status()
+                        projects = response.json()
+                        print(f"  [调试] 搜索结果: {len(projects)} 个项目")
 
-                    target_path = self.repo_url.rsplit("/", 1)[-1]
-                    for project in projects:
-                        if project["name"] == target_path:
-                            return str(project["id"])
+                        for project in projects:
+                            if project["path_with_namespace"] == path:
+                                return str(project["id"])
 
-                    if projects:
-                        return str(projects[0]["id"])
+                        if projects:
+                            return str(projects[0]["id"])
 
-                    raise RuntimeError(f"未找到项目：{target_path}")
+                    raise RuntimeError(f"未找到项目：{path}")
 
             return asyncio.run(fetch())
 
         except Exception as e:
+            print(f"  [调试] 获取项目ID失败: {e}")
             return self._parse_project_id_from_url()
 
     def _url_encode_group_path(self, path: str) -> str:
