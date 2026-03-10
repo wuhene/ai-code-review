@@ -107,20 +107,11 @@ async def start_review(params: ReviewParams):
         # 步骤 2：分析代码
         print(f"[步骤 2/3] 分析代码更改...")
 
-        # 解析用户手动指定的相关文件
-        manual_file_list = []
-        if params.manual_files:
-            manual_file_list = [f.strip() for f in params.manual_files.split(",") if f.strip()]
-            print(f"  用户指定的相关文件：{len(manual_file_list)} 个")
-
         # 创建 Analyzer，传入 fetcher 用于从远程获取代码
         analyzer = CodeAnalyzer(
-            params.project_root,
             fetcher=fetcher,
             ref=params.branch,
-            base_ref=params.base,  # 主分支
-            manual_files=manual_file_list if manual_file_list else None,
-            auto_fetch_all=True  # 如果用户未提供文件，自动获取全部
+            base_ref=params.base
         )
 
         review_requests = []
@@ -132,7 +123,7 @@ async def start_review(params: ReviewParams):
                 elem = elements[0]
 
                 # 获取完整文件内容（功能分支 + 主分支）
-                branch_code, base_code = analyzer.get_file_both_branches(file_diff.new_path)
+                branch_code, base_code = await analyzer.get_file_both_branches(file_diff.new_path)
 
                 # 构建上下文：完整文件 + diff
                 context_parts = []
