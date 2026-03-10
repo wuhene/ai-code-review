@@ -203,6 +203,34 @@
             color: #333;
         }
 
+        .result-meta {
+            font-size: 0.85em;
+            color: #666;
+            margin-bottom: 8px;
+            padding: 6px 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+
+        .result-meta .element-type {
+            background: #e3f2fd;
+            color: #1565c0;
+            padding: 2px 8px;
+            border-radius: 3px;
+            margin-right: 8px;
+            font-weight: 500;
+        }
+
+        .result-meta .element-name {
+            color: #2e7d32;
+            font-weight: 600;
+            margin-right: 8px;
+        }
+
+        .result-meta .location {
+            color: #666;
+        }
+
         .result-badges {
             display: flex;
             gap: 8px;
@@ -645,10 +673,19 @@
                         ).join('') + '</div>';
                 }
 
+                // 显示位置和方法类型
+                const locationInfo = result.location || '';
+                const fileInfo = result.filename;
+
                 item.innerHTML = `
                     <div class="result-header">
-                        <span class="result-title">${result.filename} ${result.element_name ? '(' + result.element_name + ')' : ''}</span>
+                        <span class="result-title">${fileInfo}</span>
                         <div class="result-badges">${badges.join('')}</div>
+                    </div>
+                    <div class="result-meta">
+                        <span class="element-type">${result.element_type || 'file'}</span>
+                        ${result.element_name ? `<span class="element-name">${result.element_name}</span>` : ''}
+                        ${locationInfo ? `<span class="location">${locationInfo}</span>` : ''}
                     </div>
                     <div class="result-summary">
                         <strong>摘要:</strong> ${result.summary}

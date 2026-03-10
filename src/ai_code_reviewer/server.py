@@ -128,14 +128,28 @@ async def start_review(params: ReviewParams):
             elements = analyzer.extract_changed_elements(file_diff.diff, file_diff.new_path)
             print(f"  {file_diff.filename}: {len(elements)} 个元素已更改")
 
-            # 简化：每个文件只发送一次审查请求，包含完整 diff
             if elements:
+                elem = elements[0]
+
+                # 获取完整文件内容（功能分支 + 主分支）
+                branch_code, base_code = analyzer.get_file_both_branches(file_diff.new_path)
+
+                # 构建上下文：完整文件 + diff
+                context_parts = []
+                context_parts.append(f"=== 功能分支 ({params.branch}) 完整文件 ===\n{branch_code or '(文件不存在)'}")
+                if base_code:
+                    context_parts.append(f"\n=== 主分支 ({params.base}) 完整文件 ===\n{base_code}")
+                context_parts.append(f"\n=== DIFF (变更内容) ===\n{file_diff.diff}")
+                context_code = "\n".join(context_parts)
+
                 review_requests.append(ReviewRequest(
                     diff_content=file_diff.diff,
-                    context_code=file_diff.diff,  # 直接使用 diff 内容
+                    context_code=context_code,
                     filename=file_diff.filename,
-                    element_name=elements[0].name if elements else file_diff.filename,
-                    element_type="file",
+                    element_name=elem.name,
+                    element_type=elem.element_type,
+                    element_line_start=elem.line_start,
+                    element_line_end=elem.line_end,
                     call_chain_info=""
                 ))
 
@@ -156,9 +170,23 @@ async def start_review(params: ReviewParams):
         # 格式化结果
         formatted_results = []
         for result in results:
+            # 构建位置信息
+            location = ""
+            if result.element_type and result.element_name:
+                location = f"{result.element_type} {result.element_name}"
+            if result.element_line_start > 0:
+                location += f" (行 {result.element_line_start}"
+                if result.element_line_end > result.element_line_start:
+                    location += f"-{result.element_line_end}"
+                location += ")"
+
             formatted_results.append({
                 "filename": result.filename,
                 "element_name": result.element_name,
+                "element_type": result.element_type,
+                "location": location,
+                "line_start": result.element_line_start,
+                "line_end": result.element_line_end,
                 "summary": result.summary[:500] + "..." if len(result.summary) > 500 else result.summary,
                 "full_summary": result.summary,
                 "issues_count": len(result.issues),

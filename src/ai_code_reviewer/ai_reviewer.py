@@ -19,6 +19,8 @@ class ReviewRequest:
     filename: str
     element_name: Optional[str] = None
     element_type: Optional[str] = None
+    element_line_start: int = 0
+    element_line_end: int = 0
     call_chain_info: Optional[str] = None  # 调用链信息
 
 
@@ -31,6 +33,9 @@ class ReviewResult:
     issues: list[dict]
     suggestions: list[str]
     raw_response: str
+    element_type: Optional[str] = None
+    element_line_start: int = 0
+    element_line_end: int = 0
 
 
 class AIReviewer:
@@ -86,7 +91,14 @@ class AIReviewer:
         prompt = self._build_prompt(request)
         response_text = self._call_llm(prompt)
 
-        return self._parse_response(request.filename, request.element_name, response_text)
+        return self._parse_response(
+            request.filename,
+            request.element_name,
+            request.element_type,
+            request.element_line_start,
+            request.element_line_end,
+            response_text
+        )
 
     def _call_llm(self, prompt: str) -> str:
         """调用 LLM API 获取响应。"""
@@ -100,7 +112,7 @@ class AIReviewer:
             url = "https://api.anthropic.com/v1/messages"
             body = {
                 "model": self.model,
-                "max_tokens": 4096,
+                "max_tokens": 30000,
                 "system": "You are an expert code reviewer. Analyze code changes for quality, correctness, security, and maintainability.",
                 "messages": [{"role": "user", "content": prompt}]
             }
@@ -119,7 +131,7 @@ class AIReviewer:
 
             body = {
                 "model": self.model,
-                "max_tokens": 4096,
+                "max_tokens": 30000,
                 "messages": [
                     {"role": "system", "content": "You are an expert code reviewer."},
                     {"role": "user", "content": prompt}
@@ -132,7 +144,7 @@ class AIReviewer:
             url = self.base_url
             body = {
                 "model": self.model,
-                "max_tokens": 4096,
+                "max_tokens": 30000,
                 "messages": [{"role": "user", "content": prompt}]
             }
 
@@ -178,6 +190,7 @@ class AIReviewer:
                 result = self.review(request)
                 results.append(result)
             except Exception as e:
+                print(f"审查异常,ex:{e}")
                 results.append(ReviewResult(
                     filename=request.filename,
                     element_name=request.element_name,
@@ -212,30 +225,33 @@ class AIReviewer:
         prompt_parts.extend([
             f"## 更改的文件：{request.filename}",
             "",
-            "## Diff:",
+            "## 代码变更 (Diff):",
             "```diff",
             f"{request.diff_content}",
             "```",
             "",
-            "## 相关代码上下文:",
-            "```python",
+            "## 完整代码上下文 (已提供功能分支和主分支的完整文件，可直接对比):",
+            "```",
             f"{request.context_code}",
             "```",
             "",
             "请提供：",
             "1. 更改的简要摘要",
-            "2. 发现的问题 (严重程度：critical/high/medium/low)",
-            "3. 具体的改进建议",
+            "2. 发现的问题 (严重程度：critical/high/medium/low)，必须包含具体行号 line",
+            "3. 具体的改进建议，必须包含具体行号 line",
             "4. 总体评估 (approve/needs changes/major revision needed)",
-            "5. 涉及到的调用链路，如出现问题会导致哪个调用链异常",
+            "",
+            f"注意：DIFF 中的行号是功能分支的新行号，请在 issues 和 suggestions 中标注具体行号",
             "",
             "请将你的响应格式化为 JSON:",
             "{",
             '    "summary": "...",',
             '    "issues": [',
-            '        {"severity": "high", "description": "...", "line": 10}',
+            '        {"severity": "high", "description": "问题描述", "line": 10}',
             "    ],",
-            '    "suggestions": ["..."],',
+            '    "suggestions": [',
+            '        {"description": "建议描述", "line": 15}',
+            "    ],",
             '    "assessment": "approve"',
             "}"
         ])
@@ -246,6 +262,9 @@ class AIReviewer:
             self,
             filename: str,
             element_name: Optional[str],
+            element_type: Optional[str],
+            line_start: int,
+            line_end: int,
             response_text: str
     ) -> ReviewResult:
         """将 AI 响应解析为结构化结果。"""
@@ -263,13 +282,24 @@ class AIReviewer:
                 data = json.loads(json_str)
                 summary = data.get("summary", response_text)
                 issues = data.get("issues", [])
-                suggestions = data.get("suggestions", [])
+
+                # suggestions 可能是字符串数组或对象数组
+                raw_suggestions = data.get("suggestions", [])
+                suggestions = []
+                for s in raw_suggestions:
+                    if isinstance(s, dict):
+                        suggestions.append(f"[行{s.get('line', '?')}] {s.get('description', '')}")
+                    else:
+                        suggestions.append(str(s))
             except json.JSONDecodeError:
                 pass
 
         return ReviewResult(
             filename=filename,
             element_name=element_name,
+            element_type=element_type,
+            element_line_start=line_start,
+            element_line_end=line_end,
             summary=summary,
             issues=issues,
             suggestions=suggestions,
