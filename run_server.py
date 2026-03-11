@@ -8,7 +8,7 @@ from pathlib import Path
 src_dir = Path(__file__).parent / "src"
 sys.path.insert(0, str(src_dir))
 
-from ai_code_reviewer.server import app
+from ai_code_reviewer.web.server import app
 
 if __name__ == "__main__":
     print("AI Code Reviewer - Web Server")
