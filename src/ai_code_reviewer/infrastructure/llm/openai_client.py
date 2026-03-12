@@ -36,15 +36,20 @@ class OpenAICompatibleClient(LLMClientBase):
         self.httpx = httpx
         self.url = f"{self.base_url}/chat/completions"
 
-    def chat(self, prompt: str, **kwargs) -> str:
+    def chat(self, prompt: str, system: str = None, **kwargs) -> str:
         """发送聊天请求。"""
-        messages = [
-            {"role": "system", "content": "You are an expert code reviewer."},
-            {"role": "user", "content": prompt}
-        ]
+        if system:
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt}
+            ]
+        else:
+            messages = [
+                {"role": "user", "content": prompt}
+            ]
         return self.chat_with_messages(messages, **kwargs)
 
-    def chat_with_messages(self, messages: list[dict], **kwargs) -> str:
+    def chat_with_messages(self, messages: list[dict], system: str = None, **kwargs) -> str:
         """使用消息格式发送请求。"""
         max_tokens = kwargs.get("max_tokens", 30000)
 
@@ -60,12 +65,15 @@ class OpenAICompatibleClient(LLMClientBase):
         }
 
         try:
-            response = self.httpx.post(self.url, headers=headers, json=body, timeout=120)
+            response = self.httpx.post(self.url, headers=headers, json=body, timeout=300)
             response.raise_for_status()
             result = response.json()
 
             content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
             return content
 
-        except self.httpx.HTTPError as e:
-            raise RuntimeError(f"API 调用失败：{e}")
+        except self.httpx.HTTPStatusError as e:
+            error_detail = e.response.text if e.response else str(e)
+            raise RuntimeError(f"API 调用失败：{e.response.status_code} - {error_detail}")
+        except Exception as e:
+            raise RuntimeError(f"API 调用失败：{str(e)}")

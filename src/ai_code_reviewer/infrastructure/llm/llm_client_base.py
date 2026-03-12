@@ -23,12 +23,13 @@ class LLMClientBase(ABC):
         pass
 
     @abstractmethod
-    def chat_with_messages(self, messages: list[dict], **kwargs) -> str:
+    def chat_with_messages(self, messages: list[dict], system: str = None, **kwargs) -> str:
         """
         使用消息格式发送聊天请求。
 
         Args:
             messages: 消息列表 [{"role": "user", "content": "..."}]
+            system: System prompt
             **kwargs: 其他参数
 
         Returns:

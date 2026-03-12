@@ -14,6 +14,7 @@ import os
 from typing import Optional
 
 from ..entities import ReviewRequest, ReviewResult
+from . import prompts
 
 
 class AIReviewer:
@@ -106,59 +107,7 @@ class AIReviewer:
 
     def _build_prompt(self, request: ReviewRequest) -> str:
         """构建审查提示。"""
-        prompt_parts = [
-            "我需要你审查一个代码变更。请分析以下内容：",
-            "1. 代码质量和最佳实践",
-            "2. 潜在的 bug 或问题",
-            "3. 安全问题",
-            "4. 性能影响",
-            "5. 可维护性和可读性",
-            ""
-        ]
-
-        if request.call_chain_info:
-            prompt_parts.append("## 调用链信息")
-            prompt_parts.append("```")
-            prompt_parts.append(request.call_chain_info)
-            prompt_parts.append("```")
-            prompt_parts.append("特别注意检查这些调用链是否会被你的更改影响！")
-            prompt_parts.append("")
-
-        prompt_parts.extend([
-            f"## 更改的文件：{request.filename}",
-            "",
-            "## 代码变更 (Diff):",
-            "```diff",
-            f"{request.diff_content}",
-            "```",
-            "",
-            "## 完整代码上下文 (已提供功能分支和主分支的完整文件，可直接对比):",
-            "```",
-            f"{request.context_code}",
-            "```",
-            "",
-            "请提供：",
-            "1. 更改的简要摘要",
-            "2. 发现的问题 (严重程度：critical/high/medium/low)，必须包含具体行号 line",
-            "3. 具体的改进建议，必须包含具体行号 line",
-            "4. 总体评估 (approve/needs changes/major revision needed)",
-            "",
-            f"注意：已提供带行号的完整代码上下文，请根据该上下文中的行号来标注 issues 和 suggestions 中的实际行号，不要使用 DIFF 中的相对行号。",
-            "",
-            "请将你的响应格式化为 JSON:",
-            "{",
-            '    "summary": "...",',
-            '    "issues": [',
-            '        {"severity": "high", "description": "问题描述", "line": 10},  // 必须包含 line 字段',
-            "    ],",
-            '    "suggestions": [',
-            '        {"description": "建议描述", "line": 15}',
-            "    ],",
-            '    "assessment": "approve"',
-            "}"
-        ])
-
-        return "\n".join(prompt_parts)
+        return prompts.build_prompt(request)
 
     def _parse_response(
             self,
