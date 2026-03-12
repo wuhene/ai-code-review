@@ -157,11 +157,16 @@ class ReviewApplicationService:
                     file_diff.filename, branch, base
                 )
 
-                # 构建上下文
+                # 构建上下文（给代码加上行号，方便AI定位）
                 context_parts = []
-                context_parts.append(f"=== 功能分支 ({branch}) 完整文件 ===\n{branch_code or '(文件不存在)'}")
+                context_parts.append(f"=== 功能分支 ({branch}) 完整文件 ===")
+                if branch_code:
+                    context_parts.append(self._add_line_numbers(branch_code))
+                else:
+                    context_parts.append("(文件不存在)")
                 if base_code:
-                    context_parts.append(f"\n=== 主分支 ({base}) 完整文件 ===\n{base_code}")
+                    context_parts.append(f"\n=== 主分支 ({base}) 完整文件 ===")
+                    context_parts.append(self._add_line_numbers(base_code))
                 context_parts.append(f"\n=== DIFF (变更内容) ===\n{file_diff.diff}")
                 context_code = "\n".join(context_parts)
 
@@ -188,3 +193,9 @@ class ReviewApplicationService:
         )
 
         return reviewer.review_batch(review_requests)
+
+    def _add_line_numbers(self, code: str) -> str:
+        """给代码加上行号。"""
+        lines = code.split('\n')
+        width = len(str(len(lines)))
+        return '\n'.join(f"{i+1:>{width}}  {line}" for i, line in enumerate(lines))
